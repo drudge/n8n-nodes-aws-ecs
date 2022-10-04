@@ -8,8 +8,10 @@ import {
 	NodeOperationError,
 } from 'n8n-workflow';
 
+import { debuglog } from 'util';
 import * as AWS from 'aws-sdk';
 
+const debug = debuglog('n8n-nodes-aws-ecs');
 export class AwsEcs implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'AWS ECS',
@@ -38,8 +40,23 @@ export class AwsEcs implements INodeType {
 				noDataExpression: true,
 				options: [
 					{
+						name: 'Describe Tasks',
+						value: 'describeTasks',
+						action: 'Describes a specified task or tasks',
+					},
+					{
+						name: 'List Tasks',
+						value: 'listTasks',
+						action: 'Returns a list of tasks',
+					},
+					{
 						name: 'Run Task',
 						value: 'runTask',
+						action: 'Starts a new task using the specified task definition',
+					},
+					{
+						name: 'Stop Task',
+						value: 'stopTask',
 						action: 'Starts a new task using the specified task definition',
 					},
 				],
@@ -72,6 +89,7 @@ export class AwsEcs implements INodeType {
 				displayOptions: {
 					show: {
 						operation: [
+							'listTasks',
 							'runTask',
 						],
 					},
@@ -86,7 +104,10 @@ export class AwsEcs implements INodeType {
 				displayOptions: {
 					show: {
 						operation: [
+							'describeTasks',
+							'listTasks',
 							'runTask',
+							'stopTask',
 						],
 					},
 				},
@@ -107,12 +128,70 @@ export class AwsEcs implements INodeType {
 				},
 			},
 			{
+				displayName: 'Task',
+				name: 'task',
+				type: 'string',
+				default: '',
+				required: true,
+				description: 'The task ID or full Amazon Resource Name (ARN) of the task to stop',
+				displayOptions: {
+					show: {
+						operation: [
+							'stopTask',
+						],
+					},
+				},
+			},
+			{
+				displayName: 'Reason',
+				name: 'reason',
+				type: 'string',
+				default: '',
+				description: 'An optional message specified when a task is stopped. For example, if you\'re using a custom scheduler, you can use this parameter to specify the reason for stopping the task here, and the message appears in subsequent DescribeTasks API operations on this task. Up to 255 characters are allowed in this message.',
+				displayOptions: {
+					show: {
+						operation: [
+							'stopTask',
+						],
+					},
+				},
+			},
+			{
+				displayName: 'Desired Status',
+				name: 'desiredStatus',
+				type: 'options',
+				options: [
+					{
+						name: 'Pending',
+						value: 'PENDING',
+					},
+					{
+						name: 'Running',
+						value: 'RUNNING',
+					},
+					{
+						name: 'Stopped',
+						value: 'STOPPED',
+					},
+				],
+				default: 'RUNNING',
+				description: 'The task desired status to use when filtering the ListTasks results. Specifying a desiredStatus of STOPPED limits the results to tasks that Amazon ECS has set the desired status to STOPPED. This can be useful for debugging tasks that aren\'t starting properly or have died or finished. The default status filter is RUNNING, which shows tasks that Amazon ECS has set the desired status to RUNNING.',
+				displayOptions: {
+					show: {
+						operation: [
+							'listTasks',
+						],
+					},
+				},
+			},
+			{
 				displayName: 'Count',
 				name: 'count',
 				type: 'number',
 				typeOptions: {
 					minValue: 1,
 					maxValue: 10,
+					numberStepSize: 1,
 				},
 				default: 1,
 				required: true,
@@ -182,8 +261,15 @@ export class AwsEcs implements INodeType {
 				typeOptions: {
 					multipleValues: false,
 				},
-				description: "The query parameter to send",
+				description: "The network configuration for the task. This parameter is required for task definitions that use the awsvpc network mode to receive their own elastic network interface, and it isn't supported for other network modes.",
 				default: {},
+				displayOptions: {
+					show: {
+						operation: [
+							'runTask',
+						],
+					},
+				},
 				options: [
 					{
 						name: "awsvpcConfiguration",
@@ -266,13 +352,78 @@ export class AwsEcs implements INodeType {
 					},
 				],
 			},
+			{
+				displayName: "Tasks",
+				name: "tasks",
+				placeholder: "Add Task",
+				type: "fixedCollection",
+				typeOptions: {
+					multipleValues: true,
+				},
+				required: true,
+				description: "A list of up to 100 task IDs or full ARN entries",
+				default: {},
+				displayOptions: {
+					show: {
+						operation: [
+							'describeTasks',
+						],
+					},
+				},
+				options: [
+				{
+						name: "tasks",
+						displayName: "Task",
+						required: true,
+						values: [
+							{
+								displayName: "Task ID",
+								name: "task",
+								type: "string",
+								default: "",
+								description: "The ID of the task",
+							},
+						],
+					},
+				],
+			},
+			{
+				displayName: "Include",
+				name: "include",
+				placeholder: "Add Include",
+				type: "fixedCollection",
+				typeOptions: {
+					multipleValues: true,
+				},
+				required: true,
+				description: "A list of up to 100 task IDs or full ARN entries",
+				default: {},
+				displayOptions: {
+					show: {
+						operation: [
+							'describeTasks',
+						],
+					},
+				},
+				options: [
+				{
+						name: "include",
+						displayName: "Include",
+						values: [
+							{
+								displayName: "Include",
+								name: "include",
+								type: "string",
+								default: "",
+								description: "The ID of the task",
+							},
+						],
+					},
+				],
+			},
 		],
 	};
 
-	// The function below is responsible for actually doing whatever this node
-	// is supposed to do. In this case, we're just appending the `myString` property
-	// with whatever the user has entered.
-	// You can make async calls and use `await`.
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const credentials: ICredentialDataDecryptedObject = await this.getCredentials('aws');
@@ -284,39 +435,67 @@ export class AwsEcs implements INodeType {
 
 		let item: INodeExecutionData;
 
-		// Iterates over all input items and add the key "myString" with the
-		// value the parameter "myString" resolves to.
-		// (This could be a different value for each item in case it contains an expression)
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
 			try {
 				const operation = this.getNodeParameter('operation', itemIndex) as string;
 
 				item = items[itemIndex];
 
-				if (operation === 'runTask') {
+				if (operation === 'describeTasks') {
+					const cluster = this.getNodeParameter('cluster', itemIndex) as string;
+					const tasks = this.getNodeParameter('tasks', itemIndex, {}) as IDataObject;
+					const include = this.getNodeParameter('include', itemIndex, {}) as IDataObject;
+					const params: AWS.ECS.DescribeTasksRequest = {
+						tasks: (tasks.tasks as IDataObject[] || []).map(({ task }) => task as string),
+						include: (include.include as IDataObject[] || []).map(({ include }) => include as string),
+					};
+
+					if (cluster) {
+						params.cluster = cluster;
+					}
+
+					debug(JSON.stringify(params, null, 2));
+					const results = await ecs.describeTasks(params).promise();
+					item.json = { ...results };
+				} else if (operation === 'listTasks') {
+					const cluster = this.getNodeParameter('cluster', itemIndex) as string;
+					const launchType = this.getNodeParameter('launchType', itemIndex) as string;
+					const desiredStatus = this.getNodeParameter('desiredStatus', itemIndex) as string;
+					const params: AWS.ECS.ListTasksRequest = {
+						launchType,
+						desiredStatus,
+					};
+
+					if (cluster) {
+						params.cluster = cluster;
+					}
+
+					debug(JSON.stringify(params, null, 2));
+					const results = await ecs.listTasks(params).promise();
+					item.json = { ...results };
+				} else if (operation === 'runTask') {
 					const cluster = this.getNodeParameter('cluster', itemIndex) as string;
 					const launchType = this.getNodeParameter('launchType', itemIndex) as string;
 					const taskDefinition = this.getNodeParameter('taskDefinition', itemIndex) as string;
 					const count = this.getNodeParameter('count', itemIndex) as number;
 					const enableECSManagedTags = this.getNodeParameter('enableECSManagedTags', itemIndex) as boolean;
 					const propagateTags = this.getNodeParameter('propagateTags', itemIndex) as string;
-					const networkConfiguration = this.getNodeParameter('networkConfiguration', 0, {}) as IDataObject;
+					const networkConfiguration = this.getNodeParameter('networkConfiguration', itemIndex, {}) as IDataObject;
 
 					if (networkConfiguration && networkConfiguration.awsvpcConfiguration) {
 						const vpcConfig =  networkConfiguration.awsvpcConfiguration as IDataObject;
 						const subnets =  vpcConfig.subnets as IDataObject;
 						const securityGroups = vpcConfig.securityGroups as IDataObject;
 
-
 						networkConfiguration.awsvpcConfiguration = {
 							...vpcConfig,
-							subnets: (subnets.subnets as IDataObject[] || []).map(({subnet}) => subnet),
-							securityGroups: (securityGroups.securityGroups as IDataObject[] || []).map(({securityGroup}) => securityGroup),
+							subnets: (subnets.subnets as IDataObject[] || []).map(({subnet}) => subnet as string),
+							securityGroups: (securityGroups.securityGroups as IDataObject[] || []).map(({securityGroup}) => securityGroup as string),
 						};
 					}
-					const params = {
+
+					const params: AWS.ECS.RunTaskRequest = {
 						launchType,
-						cluster,
 						taskDefinition,
 						count,
 						enableECSManagedTags,
@@ -324,21 +503,43 @@ export class AwsEcs implements INodeType {
 						networkConfiguration,
 					};
 
-					console.log(JSON.stringify(params, null, 2));
+					if (cluster) {
+						params.cluster = cluster;
+					}
+
+					debug(JSON.stringify(params, null, 2));
 
 					const results = await ecs.runTask(params).promise();
 					item.json = { ...results };
+				} else if (operation === 'stopTask') {
+					const cluster = this.getNodeParameter('cluster', itemIndex) as string;
+					const task = this.getNodeParameter('task', itemIndex) as string;
+					const reason = this.getNodeParameter('reason', itemIndex) as string;
+					const params: AWS.ECS.StopTaskRequest = {
+						task,
+					};
+
+					if (cluster) {
+						params.cluster = cluster;
+					}
+
+					if (reason) {
+						params.reason = reason;
+					}
+
+					debug(JSON.stringify(params, null, 2));
+					const results = await ecs.stopTask(params).promise();
+					item.json = { ...results };
+				} else {
+					throw new NodeOperationError(this.getNode(), `Operation "${operation}" not supported! `, {
+						itemIndex,
+					});
 				}
 			} catch (error) {
-				// This node should never fail but we want to showcase how
-				// to handle errors.
 				if (this.continueOnFail()) {
 					items.push({ json: this.getInputData(itemIndex)[0].json, error, pairedItem: itemIndex });
 				} else {
-					// Adding `itemIndex` allows other workflows to handle this error
 					if (error.context) {
-						// If the error thrown already contains the context property,
-						// only append the itemIndex
 						error.context.itemIndex = itemIndex;
 						throw error;
 					}

@@ -1,13 +1,15 @@
 {
   "name": "n8n-nodes-aws-ecs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "n8n node for consuming the AWS ECS API.",
   "keywords": [
     "n8n-community-node-package",
     "n8n-nodes",
     "aws",
     "ecs",
-    "container"
+    "container",
+    "elastic",
+    "task"
   ],
   "license": "MIT",
   "homepage": "https://github.com/drudge/n8n-nodes-aws-ecs",
